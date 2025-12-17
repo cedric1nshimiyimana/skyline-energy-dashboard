@@ -1,113 +1,57 @@
-# core/live_data.py - Mock data generation and logging
+# core/live_data.py
 
 import random
 from datetime import datetime
-import pandas as pd
-import os
 
-# --- Configuration ---
-DATA_FILE = "historical_data.csv" 
-SOC_DROP_PER_STEP = 0.05 
+# --- 1. THE ASSET LEDGER (Persistence Simulation) ---
+# In a production system, this value would be saved to a database.
+# For now, it stays in memory as your "Monotonic Odometer".
+if 'persistent_throughput' not in globals():
+    global persistent_throughput
+    persistent_throughput = 450.0  # Starting value in kWh
 
-def get_latest_data(site_id):
+def get_live_data(site_id, sim_net_kw=0.0, time_step_seconds=10):
     """
-    Returns the latest live operational data for a given site.
+    Generates and tracks live system data with causal integrity.
+    
+    Args:
+        site_id (str): The ID of the energy site.
+        sim_net_kw (float): The net power flow from the simulator.
+        time_step_seconds (int): Time elapsed since last update.
     """
-    current_time = datetime.now()
-    current_hour = current_time.hour
+    global persistent_throughput
     
-    # --- 1. Load/Demand Simulation ---
-    if 7 <= current_hour < 22:
-        base_load = 8.0 
-        load_kw = base_load + random.uniform(0.5, 1.5)
-    else:
-        base_load = 1.0
-        load_kw = base_load + random.uniform(0.1, 0.5)
-
-    # --- 2. Solar/Source Simulation ---
-    if 9 <= current_hour <= 17:
-        solar_kw = 10 * (1 - abs(current_hour - 13) / 4) + random.uniform(-1, 1)
-        solar_kw = max(0, solar_kw)
-    else:
-        solar_kw = 0.0
-
-    # --- 3. Battery State of Charge (SOC) Simulation ---
-    history_df = get_historical_data(site_id)
-    if not history_df.empty:
-        last_soc = history_df['battery_soc'].iloc[-1]
-    else:
-        last_soc = 50 
+    # 2. Independent Causal Signal (Ambient Temp)
+    # This represents the actual environment, separate from battery heat
+    ambient_celsius = 24.5 + random.uniform(-1.5, 1.5)
     
-    net_power = solar_kw - load_kw
+    # 3. Energy Throughput Logic (The Odometer)
+    # Power (kW) * Time (Hours) = Energy (kWh)
+    delta_hours = time_step_seconds / 3600.0
+    energy_increment = abs(sim_net_kw) * delta_hours
+    persistent_throughput += energy_increment
     
-    if net_power > 0:
-        soc_change = net_power * 0.01 
-    else:
-        soc_change = net_power * 0.01
-
-    new_soc = last_soc + soc_change
-    new_soc = max(0, min(100, new_soc))
-    
-    # --- 4. Other Metrics ---
-    inverter_temp = 30 + abs(net_power) * 0.5 + random.uniform(-0.5, 0.5)
+    # 4. Generate Live Readings
+    # We simulate these to match the site's expected scale
+    load_kw = 12.0 + random.uniform(-2, 4)
+    solar_kw = max(0, load_kw + sim_net_kw) # Derived from physics flow
     
     return {
-        "timestamp": current_time,
-        "solar_kw": solar_kw,
-        "battery_soc": new_soc,
-        "load_kw": load_kw,
-        "inverter_temp": inverter_temp,
-        "ambient_temp": 25.0 + random.uniform(-2, 3),
-        "irradiance": solar_kw * 100,
-        "uptime_24h": 99.5 + random.uniform(0, 0.5)
+        "site_id": site_id,
+        "timestamp": datetime.now().isoformat(),
+        "solar_kw": round(solar_kw, 2),
+        "load_kw": round(load_kw, 2),
+        "ambient_temp": round(ambient_celsius, 1), # Causal Separator
+        "energy_throughput_kwh": round(persistent_throughput, 4), # Asset Odometer
+        "battery_soc": 85.0, # Placeholder: will be updated by sim_state in app.py
+        "critical_load_ratio": 0.45, # Strategic Governance metric
     }
 
-get_live_data = get_latest_data
+def log_live_data(site_id, data):
+    """Placeholder for future database logging."""
+    # print(f"📝 [LOG] Site {site_id} updated: {data['energy_throughput_kwh']} kWh total.")
+    pass
 
-def log_live_data(site_id, data_dict):
-    """Logs the current live and simulation data to a CSV file with integrity checks."""
-    
-    # Format timestamp
-    if isinstance(data_dict['timestamp'], datetime):
-        data_dict['timestamp'] = data_dict['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-
-    df_new = pd.DataFrame([data_dict])
-    file_path = f"{site_id}_{DATA_FILE}"
-
-    # --- INTEGRITY CHECK ---
-    # If file exists, check if the column count matches
-    if os.path.exists(file_path):
-        try:
-            # Read just the header
-            existing_header = pd.read_csv(file_path, nrows=0).columns.tolist()
-            new_columns = df_new.columns.tolist()
-            
-            # If columns don't match (e.g., we added Sim SOH), remove old file to prevent ParserError
-            if len(existing_header) != len(new_columns):
-                os.remove(file_path)
-                header_needed = True
-            else:
-                header_needed = False
-        except:
-            os.remove(file_path)
-            header_needed = True
-    else:
-        header_needed = True
-
-    # --- WRITE DATA ---
-    mode = 'w' if header_needed else 'a'
-    df_new.to_csv(file_path, mode=mode, index=False, header=header_needed)
-
-
-def get_historical_data(site_id):
-    """Retrieves all logged historical data for a site."""
-    file_path = f"{site_id}_{DATA_FILE}"
-    if os.path.exists(file_path):
-        try:
-            df = pd.read_csv(file_path, index_col='timestamp', parse_dates=True)
-            # Use 'tail' or 'last' to avoid crashing on large files
-            return df.tail(100) 
-        except Exception as e:
-            # If the file is corrupted, return empty so the system can restart
-            return pd.DataFrame()
-    return pd.DataFrame()
+def get_historical_data(site_id, limit=20):
+    """Placeholder for fetching trend data."""
+    return []
