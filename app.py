@@ -11,7 +11,6 @@ from utils.InsightEngine import generate_insights
 
 def main_dashboard():
     # --- 1. ENTERPRISE GLOBAL STYLING ---
-    # Note: Page config must be the first streamlit command called in the function
     st.set_page_config(page_title="Skyline Aether - Enterprise DT", layout="wide", initial_sidebar_state="collapsed")
 
     st.markdown("""
@@ -42,83 +41,88 @@ def main_dashboard():
                 font-size: 0.75rem;
                 font-weight: 700;
             }
-            .led-green {
-                height: 10px; width: 10px;
-                background-color: #00ff00;
-                border-radius: 50%;
-                display: inline-block;
-                box-shadow: 0 0 10px #00ff00;
-            }
+            .led-green { height: 10px; width: 10px; background-color: #00ff00; border-radius: 50%; display: inline-block; box-shadow: 0 0 10px #00ff00; }
         </style>
     """, unsafe_allow_html=True)
 
-    # --- 2. DATA & LOGIC ---
+    # --- 2. INITIALIZE DT STATE ---
     if 'simulator_core' not in st.session_state: 
-        st.session_state.simulator_core = SimulationCore("KIG-001", 50, 30)
+        st.session_state.simulator_core = SimulationCore("KIG-001", 85, 28)
 
+    # --- 3. DATA & PHYSICS SYNC ---
     current_site_id = "KIG-001"
-    live_data = get_live_data(current_site_id)
-
+    
+    # Get environmental context first
     current_hour = datetime.now().hour
     irradiance = max(0, 1000 * (1 - abs(current_hour - 13) / 4) + random.uniform(-50, 50)) if 9 <= current_hour <= 17 else 0.0
-    ambient_temp = 25.0 + random.uniform(-2, 3)
+    
+    # We pull live data with the "odometer" logic
+    # Note: sim_net_kw from last step is used here
+    prev_net_kw = st.session_state.get('last_net_kw', 0.0)
+    live_data = get_live_data(current_site_id, sim_net_kw=prev_net_kw)
 
+    # Run the Physics Step with Causal Separators
     sim_state = st.session_state.simulator_core.run_step(
         time_step_seconds=10, 
         irradiance=irradiance, 
-        ambient_temp=ambient_temp,
+        ambient_temp=live_data['ambient_temp'],
         current_load_kw=live_data['load_kw']
     )
-    system_insight = generate_insights(sim_state, live_data)
+    
+    # Update Session State
+    st.session_state.last_net_kw = sim_state['sim_net_kw']
     live_data.update(sim_state)
-    log_live_data(current_site_id, live_data)
+    system_insight = generate_insights(sim_state, live_data)
 
-    # --- 3. MAIN UI LAYOUT ---
+    # --- 4. MAIN UI LAYOUT ---
     h_left, h_right = st.columns([3, 1])
     with h_left:
-        st.markdown(f"<h1><span class='led-green'></span> {current_site_id} Dashboard</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#00f2ff; margin-top:-15px;'>SYSTEM STATUS: OPTIMAL</p>", unsafe_allow_html=True)
+        st.markdown(f"<h1><span class='led-green'></span> {current_site_id} Digital Twin</h1>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#00f2ff; margin-top:-15px;'>MODE: {live_data['system_state']}</p>", unsafe_allow_html=True)
 
+    # Hero Section
     st.markdown("---")
     hero_1, hero_2, hero_3 = st.columns([1, 2, 1])
 
     with hero_1:
-        st.markdown('<p class="label-text">Supply / Generation</p>', unsafe_allow_html=True)
-        st.metric("Solar Output", f"{live_data['solar_kw']:.2f} kW")
-        st.metric("Grid Feedback", "0.00 kW")
+        st.markdown('<p class="label-text">Generation</p>', unsafe_allow_html=True)
+        st.metric("Solar Output", f"{live_data['sim_solar_kw']:.2f} kW")
+        st.metric("Ambient Temp", f"{live_data['ambient_temp']:.1f}°C")
 
     with hero_2:
         st.markdown('<div style="text-align: center;">', unsafe_allow_html=True)
         st.markdown('<p class="label-text">Battery Storage Level</p>', unsafe_allow_html=True)
-        st.markdown(f'<p class="hero-value">{live_data["battery_soc"]:.1f}%</p>', unsafe_allow_html=True)
-        st.progress(int(live_data["battery_soc"]))
+        st.markdown(f'<p class="hero-value">{live_data["sim_soc"]:.1f}%</p>', unsafe_allow_html=True)
+        st.progress(int(live_data["sim_soc"]))
         st.markdown('</div>', unsafe_allow_html=True)
 
     with hero_3:
-        st.markdown('<p class="label-text">Demand / Consumption</p>', unsafe_allow_html=True)
-        st.metric("Total Load", f"{live_data['load_kw']:.2f} kW", delta_color="inverse")
-        st.metric("Critical Systems", "99.9%")
+        st.markdown('<p class="label-text">Demand</p>', unsafe_allow_html=True)
+        st.metric("Total Load", f"{live_data['sim_load_kw']:.2f} kW")
+        st.metric("Critical Ratio", f"{live_data['critical_load_ratio']*100:.0f}%")
 
+    # EVIDENCE PANEL (Heartbeat)
     st.markdown("---")
-    st.markdown('<p class="label-text">Digital Twin Predictive Maintenance</p>', unsafe_allow_html=True)
+    st.markdown('<p class="label-text">System Heartbeat & Causal Evidence</p>', unsafe_allow_html=True)
+    
+    ev_1, ev_2, ev_3, ev_4 = st.columns(4)
+    ev_1.metric("Battery Core", f"{live_data['sim_temp']:.1f}°C")
+    ev_2.metric("Odometer", f"{live_data['energy_throughput_kwh']:.2f} kWh")
+    ev_3.metric("State of Health", f"{live_data['sim_soh']:.2f}%")
+    
+    # State Badge
+    state_color = "#00ff00" if live_data['system_state'] == "Charging" else "#ff4b4b" if live_data['system_state'] == "Discharging" else "#888888"
+    ev_4.markdown(f"""
+        <div style="background:{state_color}22; border:1px solid {state_color}; border-radius:10px; padding:10px; text-align:center;">
+            <p style="color:{state_color}; margin:0; font-weight:bold; font-size:14px;">{live_data['system_state']}</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-    with st.container():
-        i_col, v_col = st.columns([0.8, 0.2])
-        i_col.info(f"🧠 {system_insight}")
-        if v_col.button("🔊 Listen", use_container_width=True):
-            st.components.v1.html(f'<script>window.speechSynthesis.speak(new SpeechSynthesisUtterance("{system_insight}"));</script>', height=0)
+    # Intelligence Panel
+    st.info(f"🧠 {system_insight}")
 
-    p_cols = st.columns(4)
-    p_cols[0].metric("Pred. SOC (1hr)", f"{live_data.get('sim_soc', 0):.1f}%")
-    p_cols[1].metric("Core Temp", f"{live_data.get('sim_temp', 0):.1f}°C")
-    soh = live_data.get('sim_soh', 100.0)
-    p_cols[2].metric("State of Health", f"{soh:.2f}%")
-    loss = (100 - soh)
-    years = ((soh - 80) / (loss/100) * 10) / (3600*24*365) if loss > 0 else 12.5
-    p_cols[3].metric("Est. Useful Life", f"{years:.1f} Yrs")
-
+    # Auto-Reload Script
     st.components.v1.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 10000);</script>", height=0)
 
-# This line ensures the app still works if you run it by itself
 if __name__ == "__main__":
     main_dashboard()
