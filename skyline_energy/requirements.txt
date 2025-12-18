@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+numpy
+paho-mqtt
+altair
+pydeck
+pillow
+gitpython
+watchdog
